@@ -20,7 +20,11 @@ def run(binary, n, d, epochs, lr=0.05, seed=42):
     if result.returncode != 0:
         raise RuntimeError(f"{binary} n={n} failed:\n{result.stderr}")
     m = re.search(r"mse=([\d.eE+-]+),max_weight_err=([\d.eE+-]+),time=([\d.eE+-]+)", result.stdout)
-    return float(m.group(1)), float(m.group(2)), float(m.group(3))
+    # transfer_time is only reported by the CUDA binaries; the CPU path has
+    # no host-to-device copy, so it's absent there rather than zero.
+    xfer = re.search(r"transfer_time=([\d.eE+-]+)", result.stdout)
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3)),
+            float(xfer.group(1)) if xfer else None)
 
 
 def main():
@@ -43,19 +47,17 @@ def main():
     for n in args.sizes:
         print(f"\n=== n={n} ===")
         for name, binary in methods:
-            # CPU is O(n*d) per epoch with no parallelism -- skip once a
-            # single run would take too long to be worth waiting for.
-            if name == "cpu" and n > 2_000_000:
-                print(f"{name:16s}: skipped (too slow at this size)")
-                continue
-            mse, max_w_err, secs = run(binary, n, args.d, args.epochs)
-            print(f"{name:16s}: {secs:.4f}s  (mse={mse:.4f}, max_weight_err={max_w_err:.5f})")
-            rows.append({"n": n, "method": name, "time": secs, "mse": mse, "max_weight_err": max_w_err})
+            mse, max_w_err, secs, xfer = run(binary, n, args.d, args.epochs)
+            xfer_note = f"  (+{xfer:.4f}s H2D)" if xfer is not None else ""
+            print(f"{name:16s}: {secs:.4f}s{xfer_note}  (mse={mse:.4f}, max_weight_err={max_w_err:.5f})")
+            rows.append({"n": n, "method": name, "time": secs,
+                          "transfer_time": "" if xfer is None else f"{xfer:.6f}",
+                          "mse": mse, "max_weight_err": max_w_err})
 
     out_csv = Path(args.out_csv)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["n", "method", "time", "mse", "max_weight_err"])
+        w = csv.DictWriter(f, fieldnames=["n", "method", "time", "transfer_time", "mse", "max_weight_err"])
         w.writeheader()
         w.writerows(rows)
     print(f"\nWrote {out_csv}")

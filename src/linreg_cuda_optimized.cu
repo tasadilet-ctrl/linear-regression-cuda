@@ -68,8 +68,20 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_grad_w, sizeof(float) * d));
     CUDA_CHECK(cudaMalloc(&d_grad_b, sizeof(float)));
 
+    // Time the host-to-device transfer separately from training (see the
+    // note in linreg_cuda_naive.cu -- both numbers are reported so the
+    // amortization claim is checkable rather than assumed).
+    cudaEvent_t xfer_start, xfer_stop;
+    cudaEventCreate(&xfer_start);
+    cudaEventCreate(&xfer_stop);
+    cudaEventRecord(xfer_start);
     CUDA_CHECK(cudaMemcpy(d_X, ds.X.data(), sizeof(float) * n * d, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_y, ds.y.data(), sizeof(float) * n, cudaMemcpyHostToDevice));
+    cudaEventRecord(xfer_stop);
+    cudaEventSynchronize(xfer_stop);
+    float xfer_ms = 0;
+    cudaEventElapsedTime(&xfer_ms, xfer_start, xfer_stop);
+
     CUDA_CHECK(cudaMemset(d_w, 0, sizeof(float) * d));
     CUDA_CHECK(cudaMemset(d_b, 0, sizeof(float)));
 
@@ -105,10 +117,11 @@ int main(int argc, char** argv) {
     float max_w_err = maxWeightError(w, b, ds);
     double secs = ms / 1000.0;
 
-    std::fprintf(stderr, "cuda_optimized: n=%d d=%d epochs=%d -> mse=%.6f, max_weight_err=%.6f, %.4fs\n",
-                 n, d, epochs, mse, max_w_err, secs);
-    std::printf("method=cuda_optimized,n=%d,d=%d,epochs=%d,mse=%.8f,max_weight_err=%.8f,time=%.6f\n",
-                n, d, epochs, mse, max_w_err, secs);
+    double xfer_s = xfer_ms / 1000.0;
+    std::fprintf(stderr, "cuda_optimized: n=%d d=%d epochs=%d -> mse=%.6f, max_weight_err=%.6f, %.4fs compute (+%.4fs H2D transfer)\n",
+                 n, d, epochs, mse, max_w_err, secs, xfer_s);
+    std::printf("method=cuda_optimized,n=%d,d=%d,epochs=%d,mse=%.8f,max_weight_err=%.8f,time=%.6f,transfer_time=%.6f\n",
+                n, d, epochs, mse, max_w_err, secs, xfer_s);
 
     cudaFree(d_X); cudaFree(d_y); cudaFree(d_w); cudaFree(d_b); cudaFree(d_grad_w); cudaFree(d_grad_b);
     return 0;
