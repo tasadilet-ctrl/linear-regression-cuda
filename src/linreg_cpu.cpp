@@ -18,27 +18,11 @@ int main(int argc, char** argv) {
 
     Dataset ds = generateDataset(n, d, seed);
 
-    std::vector<float> w(d, 0.0f);
+    std::vector<float> w;
     float b = 0.0f;
-    std::vector<float> grad_w(d);
 
     auto t0 = std::chrono::steady_clock::now();
-    for (int epoch = 0; epoch < epochs; ++epoch) {
-        std::fill(grad_w.begin(), grad_w.end(), 0.0f);
-        float grad_b = 0.0f;
-
-        for (int i = 0; i < n; ++i) {
-            const float* xi = &ds.X[static_cast<size_t>(i) * d];
-            float pred = b;
-            for (int j = 0; j < d; ++j) pred += xi[j] * w[j];
-            float err = pred - ds.y[i];
-            for (int j = 0; j < d; ++j) grad_w[j] += err * xi[j];
-            grad_b += err;
-        }
-
-        for (int j = 0; j < d; ++j) w[j] -= lr * grad_w[j] / n;
-        b -= lr * grad_b / n;
-    }
+    trainCPU(ds, epochs, lr, w, b);
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
     float mse = computeMSE(ds, w, b);

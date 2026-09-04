@@ -1,5 +1,7 @@
 # Linear Regression: CPU vs. CUDA vs. cuBLAS
 
+[![CI](https://github.com/tasadilet-ctrl/linear-regression-cuda/actions/workflows/ci.yml/badge.svg)](https://github.com/tasadilet-ctrl/linear-regression-cuda/actions/workflows/ci.yml)
+
 Batch gradient descent for multiple linear regression, implemented four ways — CPU baseline, naive CUDA (global-memory atomics), optimized CUDA (shared-memory reduction), and cuBLAS — with two real crossover points measured, not assumed: where GPU starts winning over CPU, and where handwritten CUDA stops winning over cuBLAS.
 
 ![Time vs dataset size](benchmarks/time_vs_size.png)
@@ -9,6 +11,8 @@ Developed and benchmarked on an actual CUDA GPU (NVIDIA RTX PRO 6000 Blackwell, 
 ## Correctness first
 
 All four implementations are checked against the *exact same* synthetic dataset (`y = X @ true_w + true_b + noise`, generated from a fixed seed) and compared on two things: final MSE, and max absolute error between the learned weights and the known ground-truth weights (not just "did the loss go down" — a model can have low loss without recovering the right coefficients). At every tested size from n=1,000 to n=8,000,000, **all four methods produce bit-identical MSE and weight-recovery error**. Same optimization trajectory, only the execution strategy differs — so any divergence would be a real bug (a race in the atomics, a wrong transpose flag in the cuBLAS calls, a lost sample in the block split).
+
+"Bit-identical" means *across the four implementations built with one toolchain* — which is the claim that matters, since it isolates scheduling from arithmetic. The absolute values are toolchain-dependent: the same CPU baseline compiled with Apple clang instead of the g++ used on the benchmark box returns mse 0.24381480 rather than 0.24372667 at n=20,000, because the compilers contract and vectorize the reduction differently. If you rebuild elsewhere and see different digits, that's floating-point associativity, not a bug — which is why the correctness gates below compare against tolerances rather than hard-coded constants.
 
 That's enforced by a script rather than left to the reader to eyeball:
 
@@ -57,6 +61,7 @@ src/
   linreg_cuda_naive.cu    # one thread/sample, global atomics
   linreg_cuda_optimized.cu# shared-memory block-level reduction
   linreg_cublas.cu        # cublasSgemv/Sdot/Saxpy
+  test_cpu_correctness.cpp# GPU-free gate: gradient descent vs. closed-form OLS
 scripts/
   benchmark.py            # all 4 methods across dataset sizes -> results.csv
   verify_agreement.py     # correctness gate: assert all 4 methods agree at every size
@@ -67,7 +72,16 @@ benchmarks/                # CSV + chart from the runs used in this README
 
 ## Build & run
 
-Requires the CUDA toolkit (`nvcc`) and an NVIDIA GPU — this doesn't run on macOS (no CUDA support on Apple Silicon or any Mac GPU). Tested with CUDA 13.0 on an RTX PRO 6000 (compute capability 12.0 / Blackwell).
+`build.sh` builds the CPU targets on any machine and adds the GPU ones when `nvcc` is present, so the mathematics can be verified without CUDA hardware:
+
+```bash
+./build.sh              # CPU targets always; CUDA targets too if nvcc is found
+CPU_ONLY=1 ./build.sh   # skip the CUDA targets even when nvcc is available
+
+bin/test_cpu_correctness   # gradient descent vs. closed-form OLS -- no GPU needed
+```
+
+The three GPU implementations need the CUDA toolkit to build and an actual NVIDIA GPU to run — neither exists on macOS (no CUDA on Apple Silicon or any Mac GPU). Benchmarked with CUDA 13.0 on an RTX PRO 6000 (compute capability 12.0 / Blackwell). CI compiles them with `nvcc` on a GPU-less runner, which catches compile-time regressions but cannot execute them.
 
 ```bash
 CUDA_ARCH=native ./build.sh   # or CUDA_ARCH=sm_XX for your GPU's compute capability

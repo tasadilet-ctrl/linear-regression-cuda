@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # What CAN be fully verified without a GPU: the mathematics. Gradient
+  # descent is checked against the closed-form OLS solution, which shares no
+  # arithmetic with it beyond the dataset itself.
+  cpu-correctness:
+    name: CPU math gate (${{ matrix.cxx }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CPU targets
+        run: CXX=${{ matrix.cxx }} CPU_ONLY=1 ./build.sh
+
+      - name: Gradient descent vs. closed-form OLS
+        run: ./bin/test_cpu_correctness
+
+      - name: CPU baseline smoke run
+        run: ./bin/linreg_cpu 20000 20 200 0.05 42
+
+  # The GPU implementations can't be RUN here -- free runners have no NVIDIA
+  # hardware -- but nvcc compiles them without a device, which still catches
+  # kernel syntax errors, bad CUDA/cuBLAS API use, and type errors. Compiling
+  # is a weaker check than running; it is labelled as such rather than
+  # presented as verification.
+  cuda-compile:
+    name: CUDA sources compile (no GPU to run them)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit
+
+      - name: Report toolchain
+        run: nvcc --version
+
+      # -arch=native probes the local GPU, which does not exist here, so an
+      # explicit target is required.
+      - name: Compile all CUDA implementations
+        run: CUDA_ARCH=sm_70 ./build.sh
+
+      - name: Confirm the GPU binaries were produced
+        run: ls -l bin/linreg_cuda_naive bin/linreg_cuda_optimized bin/linreg_cublas

@@ -49,6 +49,34 @@ inline Dataset generateDataset(int n, int d, unsigned seed, float noise_std = 0.
     return ds;
 }
 
+// The CPU reference training loop: full-batch gradient descent. Lives here
+// rather than inside main() so the correctness test exercises the exact same
+// code path the benchmark does, instead of a copy that could drift.
+inline void trainCPU(const Dataset& ds, int epochs, float lr,
+                     std::vector<float>& w, float& b) {
+    const int n = ds.n, d = ds.d;
+    w.assign(d, 0.0f);
+    b = 0.0f;
+    std::vector<float> grad_w(d);
+
+    for (int epoch = 0; epoch < epochs; ++epoch) {
+        std::fill(grad_w.begin(), grad_w.end(), 0.0f);
+        float grad_b = 0.0f;
+
+        for (int i = 0; i < n; ++i) {
+            const float* xi = &ds.X[static_cast<size_t>(i) * d];
+            float pred = b;
+            for (int j = 0; j < d; ++j) pred += xi[j] * w[j];
+            float err = pred - ds.y[i];
+            for (int j = 0; j < d; ++j) grad_w[j] += err * xi[j];
+            grad_b += err;
+        }
+
+        for (int j = 0; j < d; ++j) w[j] -= lr * grad_w[j] / n;
+        b -= lr * grad_b / n;
+    }
+}
+
 inline float computeMSE(const Dataset& ds, const std::vector<float>& w, float b) {
     double sse = 0.0;
     for (int i = 0; i < ds.n; ++i) {
