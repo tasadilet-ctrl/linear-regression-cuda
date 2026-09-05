@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/tasadilet-ctrl/linear-regression-cuda/actions/workflows/ci.yml/badge.svg)](https://github.com/tasadilet-ctrl/linear-regression-cuda/actions/workflows/ci.yml)
 
-Batch gradient descent for multiple linear regression, implemented four ways — CPU baseline, naive CUDA (global-memory atomics), optimized CUDA (shared-memory reduction), and cuBLAS — with two real crossover points measured, not assumed: where GPU starts winning over CPU, and where handwritten CUDA stops winning over cuBLAS.
+Batch gradient descent for multiple linear regression, implemented five ways — CPU baseline, naive CUDA (global-memory atomics), optimized CUDA (shared-memory reduction), cuBLAS, and data-parallel across two GPUs — with three real crossover points measured, not assumed: where GPU starts beating CPU, where handwritten CUDA stops beating cuBLAS, and where a second GPU stops being a liability and starts being a speedup.
 
 ![Time vs dataset size](benchmarks/time_vs_size.png)
 
@@ -52,6 +52,29 @@ The naive kernel ([`linreg_cuda_naive.cu`](src/linreg_cuda_naive.cu)) assigns on
 
 The crossover lands between n=100,000 and n=500,000: below it, our fused two-launch kernel wins on overhead; above it, cuBLAS's actual matrix-vector throughput wins on scale. Neither "always write your own kernel" nor "always call the library" is the right takeaway — it depends on where the workload actually sits.
 
+## Finding 4: the second GPU is a net loss until ~300k samples
+
+The box has two RTX PRO 6000s, so [`linreg_cuda_multigpu.cu`](src/linreg_cuda_multigpu.cu) shards the dataset across them, computes a partial gradient per device, sums the partials, and applies an identical update everywhere — the standard data-parallel recipe, the same shape as PyTorch's DDP.
+
+![Multi-GPU speedup](benchmarks/multigpu_speedup.png)
+
+| n | 1 GPU | 2 GPUs | speedup |
+|---|---|---|---|
+| 100,000 | 0.050s | 0.059s | **0.84x** (slower) |
+| 500,000 | 0.119s | 0.081s | 1.46x |
+| 2,000,000 | 0.345s | 0.198s | 1.74x |
+| 8,000,000 | 1.318s | 0.675s | 1.95x |
+| 20,000,000 | 3.310s | 1.687s | 1.96x |
+
+The gradient here is `d+1 = 21` floats, so the all-reduce moves 84 bytes per device per epoch — the bandwidth is irrelevant. What costs is the *synchronisation*: every epoch has to stop both devices, collect partials, and broadcast the sum. That fixed per-epoch latency is paid 500 times regardless of `n`, while the compute it saves grows with `n`. Below roughly 300k samples the sync costs more than the halved compute saves, and the second GPU actively makes training slower.
+
+At 8M+ it reaches 1.95–1.96x, close to the 2x ceiling. The lesson is the same one as Finding 3, one level up: more hardware is not free, and whether it helps depends on where the workload sits relative to the fixed cost of coordinating it.
+
+Both configurations are timed through the same binary with the same wall-clock timer, so the comparison isn't confounded by a different code path or timing method.
+
+**On exactness:** sharding changes the order the gradient terms are summed, and float addition isn't associative, so divergence from the single-GPU result is permitted in principle. Measured, it doesn't happen here — the 2-GPU run matches bit-for-bit at every size tested. That's an empirical property of this workload (many same-signed terms of similar magnitude), not a guarantee, so the benchmark checks agreement against a tolerance rather than assuming it.
+
+
 ## Structure
 
 ```
@@ -61,11 +84,14 @@ src/
   linreg_cuda_naive.cu    # one thread/sample, global atomics
   linreg_cuda_optimized.cu# shared-memory block-level reduction
   linreg_cublas.cu        # cublasSgemv/Sdot/Saxpy
+  linreg_cuda_multigpu.cu # data-parallel sharding across N GPUs
   test_cpu_correctness.cpp# GPU-free gate: gradient descent vs. closed-form OLS
 scripts/
   benchmark.py            # all 4 methods across dataset sizes -> results.csv
   verify_agreement.py     # correctness gate: assert all 4 methods agree at every size
   plot_results.py         # the chart above
+  benchmark_multigpu.py   # 1-GPU vs 2-GPU scaling -> multigpu.csv
+  plot_multigpu.py        # the multi-GPU chart
 build.sh
 benchmarks/                # CSV + chart from the runs used in this README
 ```
@@ -90,14 +116,17 @@ bin/linreg_cpu             1000000 20 500 0.05 42
 bin/linreg_cuda_naive      1000000 20 500 0.05 42
 bin/linreg_cuda_optimized  1000000 20 500 0.05 42
 bin/linreg_cublas          1000000 20 500 0.05 42
+bin/linreg_cuda_multigpu   1000000 20 500 0.05 42 2   # last arg = number of GPUs
 
 python3 scripts/benchmark.py
 python3 scripts/verify_agreement.py   # correctness gate; exits nonzero on any divergence
 python3 scripts/plot_results.py
+
+python3 scripts/benchmark_multigpu.py   # 1-GPU vs 2-GPU scaling
+python3 scripts/plot_multigpu.py
 ```
 
 ## Possible extensions
 
-- **Multiple GPUs**: this box has two RTX PRO 6000s — data-parallel sharding across both, with an all-reduce for the gradient, would be the natural next step.
 - **cuSOLVER for the closed-form normal-equation solve** instead of gradient descent, as a fifth comparison point.
 - **Mixed precision (TF32/FP16)** to see how much of the cuBLAS gap is precision-related vs. algorithmic.

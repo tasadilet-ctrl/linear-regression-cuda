@@ -54,4 +54,4 @@ jobs:
         run: CUDA_ARCH=sm_70 ./build.sh
 
       - name: Confirm the GPU binaries were produced
-        run: ls -l bin/linreg_cuda_naive bin/linreg_cuda_optimized bin/linreg_cublas
+        run: ls -l bin/linreg_cuda_naive bin/linreg_cuda_optimized bin/linreg_cublas bin/linreg_cuda_multigpu

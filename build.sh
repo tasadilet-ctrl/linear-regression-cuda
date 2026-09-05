@@ -27,7 +27,8 @@ elif command -v "$NVCC" >/dev/null 2>&1; then
     "$NVCC" -O3 -std=c++17 -arch="$ARCH" src/linreg_cuda_naive.cu     -o bin/linreg_cuda_naive
     "$NVCC" -O3 -std=c++17 -arch="$ARCH" src/linreg_cuda_optimized.cu -o bin/linreg_cuda_optimized
     "$NVCC" -O3 -std=c++17 -arch="$ARCH" src/linreg_cublas.cu -lcublas -o bin/linreg_cublas
-    built="$built, bin/linreg_cuda_naive, bin/linreg_cuda_optimized, bin/linreg_cublas"
+    "$NVCC" -O3 -std=c++17 -arch="$ARCH" src/linreg_cuda_multigpu.cu -o bin/linreg_cuda_multigpu
+    built="$built, bin/linreg_cuda_naive, bin/linreg_cuda_optimized, bin/linreg_cublas, bin/linreg_cuda_multigpu"
 else
     echo "note: '$NVCC' not found -- building CPU targets only." >&2
     echo "      Install the CUDA toolkit to build the GPU implementations." >&2
