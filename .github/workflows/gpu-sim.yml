@@ -1,0 +1,87 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this runs
+# the naive, optimized and cuBLAS implementations on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim) and compares their results with
+# the CPU baseline. A simulator has no timing model and cannot reproduce
+# hardware-specific behavior, so it complements real-GPU testing and does not
+# replace it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/**"
+      - "build.sh"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-agreement:
+    name: GPU results vs CPU (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+          library-path: "false"
+
+      # compute_90 embeds PTX only, which the simulator runs. The simulator
+      # needs a shared CUDA runtime. The multi-GPU variant is not built
+      # because the simulated machine has one device.
+      - name: Build
+        run: |
+          mkdir -p bin
+          c++ -O3 -std=c++17 src/linreg_cpu.cpp -o bin/linreg_cpu
+          for v in cuda_naive cuda_optimized; do
+            nvcc -O3 -std=c++17 -arch=compute_90 -cudart shared src/linreg_$v.cu -o bin/linreg_$v
+          done
+          nvcc -O3 -std=c++17 -arch=compute_90 -cudart shared src/linreg_cublas.cu -lcublas -o bin/linreg_cublas
+
+      # Every variant runs the same small problem (n d epochs lr seed). The
+      # step fails if a run exits non-zero, prints no result line, or ends up
+      # with an MSE or weight error that differs from the CPU baseline.
+      - name: Run and compare with the CPU baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          args="2000 20 100 0.05 42"
+          ./bin/linreg_cpu $args | tee cpu.out
+          for v in cuda_naive cuda_optimized cublas; do
+            vgpu run ./bin/linreg_$v $args | tee $v.out
+          done
+          python3 - <<'PY'
+          import sys
+
+          def result(name):
+              lines = [l for l in open(name + ".out") if l.startswith("method=")]
+              if len(lines) != 1:
+                  sys.exit(f"{name}: expected one result line, got {len(lines)}")
+              kv = dict(p.split("=", 1) for p in lines[0].strip().split(","))
+              return float(kv["mse"]), float(kv["max_weight_err"])
+
+          cpu_mse, cpu_err = result("cpu")
+          if not (0 < cpu_mse < 10):
+              sys.exit(f"cpu: implausible mse {cpu_mse}")
+          bad = False
+          for v in ("cuda_naive", "cuda_optimized", "cublas"):
+              mse, err = result(v)
+              ok = abs(mse - cpu_mse) <= 1e-3 * cpu_mse and abs(err - cpu_err) <= 1e-3
+              print(f"{v}: mse={mse} max_weight_err={err} (cpu {cpu_mse} {cpu_err}) {'OK' if ok else 'MISMATCH'}")
+              bad = bad or not ok
+          sys.exit(1 if bad else 0)
+          PY
